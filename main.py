@@ -38,32 +38,38 @@ def initialize_positions(grid, center):
 def initialize_probabilities(grid):
     n = len(grid)
     P = np.zeros((n * n, n * n))
+
+    def is_valid(x, y):
+        return 0 <= x < n and 0 <= y < n and grid[x, y] != -1
+
     for i in range(n):
         for j in range(n):
             if grid[i, j] != -1:
                 current_index = i * n + j
                 neighbors = [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
-                valid_neighbors = [x for x in neighbors if 0 <= x[0] < n and 0 <= x[1] < n and grid[x[0], x[1]] != -1]
-                for neighbor in valid_neighbors:
-                    neighbor_index = neighbor[0] * n + neighbor[1]
-                    P[current_index, neighbor_index] = 1 / len(valid_neighbors)
+                valid_neighbors = [idx for idx in neighbors if is_valid(*idx)]
+                if valid_neighbors:
+                    prob = 1 / len(valid_neighbors)
+                    for (x, y) in valid_neighbors:
+                        # Set the transition probability initially for expected time
+                        neighbor_index = x * n + y
+                        P[current_index, neighbor_index] = prob 
     return P
 
 def update_probabilities_with_bot(grid, crew_pos, n):
     P = np.zeros((n * n, n * n))
     crew_index = crew_pos[0] * n + crew_pos[1]
 
-    # Set default move probabilities
-    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        new_pos = (crew_pos[0] + dx, crew_pos[1] + dy)
-        if 0 <= new_pos[0] < n and 0 <= new_pos[1] < n and grid[new_pos[0]][new_pos[1]] != -1:
-            neighbor_index = new_pos[0] * n + new_pos[1]
-            P[crew_index, neighbor_index] = 1  # Equal probability initially
+    def is_valid(x, y):
+        return 0 <= x < n and 0 <= y < n and grid[x][y] != -1
 
-    # Normalize probabilities to ensure they sum to 1
-    total = np.sum(P[crew_index, :])
-    if total > 0:
-        P[crew_index, :] /= total
+    # Normal random move in cardinal directions
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    possible_moves = [(crew_pos[0] + dx, crew_pos[1] + dy) for dx, dy in directions if is_valid(crew_pos[0] + dx, crew_pos[1] + dy)]
+    prob = 1 / len(possible_moves) if possible_moves else 0
+    for move in possible_moves:
+        neighbor_index = move[0] * n + move[1]
+        P[crew_index, neighbor_index] = prob
 
     return P
 
@@ -103,31 +109,61 @@ def initialize_reward_and_value_functions(grid, center):
         for j in range(n):
             if grid[i, j] != -1:
                 current_index = i * n + j
-                for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0), (0, 0)]:
+                actions = [(0, 0), (0, 1), (1, 0), (0, -1), (-1, 0)]
+                for idx, (dx, dy) in enumerate(actions):
                     new_i, new_j = i + dx, j + dy
                     if 0 <= new_i < n and 0 <= new_j < n and grid[new_i, new_j] != -1:
-                        new_index = new_i * n + new_j
-                        # Negative reward for greater distance to center
                         distance = abs(new_i - center[0]) + abs(new_j - center[1])
-                        R[current_index, new_index] = distance
+                        R[current_index, idx] = -(distance - (abs(i - center[0]) + abs(j - center[1])))  # Negative reward for greater distance
     return R, V
 
-def value_iteration(R, P, V, n, gamma=0.90, threshold=0.01):
+def value_iteration(grid,R, P, V, n, gamma=0.95, threshold=0.01):
     num_states = n * n
+    P = np.zeros((num_states, num_states))  # Assuming this is predefined elsewhere appropriately
     delta = float('inf')
+    
     while delta > threshold:
         delta = 0
         for s in range(num_states):
             v = V[s]
             max_value = float('-inf')
-            for s_prime in range(num_states):  # Explore all possible states s_prime
-                if P[s, s_prime] > 0:  # Ensure there is a possible transition
-                    action_value = P[s, s_prime] * (R[s, s_prime] + gamma * V[s_prime])
-                    max_value = max(max_value, action_value)
+            for a_idx, a in enumerate(get_valid_actions(s, grid, n)):  # Enumerate to get the action index
+                expected_value = 0
+                next_states = get_next_states(s, a, grid, n)
+                for s_prime in next_states:  # Get next states for action a from state s
+                    if s_prime < len(P[s]) and P[s, s_prime] > 0:  # Check if s_prime is valid and P[s, s_prime] is positive
+                        expected_value += P[s, s_prime] * V[s_prime]  # Sum P(s'|s,a) * V(s')
+
+                action_value = R[s, a_idx] + gamma * expected_value  # R(s,a) + γ * Σ(P(s'|s,a) * V(s'))
+                print("R[s, a_idx]:", R[s, a_idx], "Type:", type(R[s, a_idx]))
+                print("P[s, s_prime]:", P[s, s_prime], "Type:", type(P[s, s_prime]))
+                print("action_value:", action_value, "Type:", type(action_value))
+                max_value = max(max_value, action_value)  # Choose the action that maximizes the value
+                
             new_v = max_value if max_value != float('-inf') else v
             V[s] = new_v
             delta = max(delta, abs(v - new_v))
     return V
+
+def get_valid_actions(s, grid, n):
+    actions = []
+    x, y = s // n, s % n
+    # Add diagonal movements for the bot if required
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    for dx, dy in directions:
+        if 0 <= x + dx < n and 0 <= y + dy < n and grid[x + dx][y + dy] != -1:
+            actions.append((dx, dy))
+    return actions
+
+def get_next_states(s, action, grid, n):
+    x, y = s // n, s % n
+    dx, dy = action
+    new_x, new_y = x + dx, y + dy
+    if 0 <= new_x < n and 0 <= new_y < n and grid[new_x][new_y] != -1:
+        return [new_x * n + new_y]  # Return a list of one next state
+    return [s]  # Return the current state in a list if no valid move
+
 
 def print_grid(grid, crew_position, bot_position):
     display_grid = np.array([' ' if x == 0 else 'X' for x in grid.flatten()]).reshape(grid.shape)
@@ -140,41 +176,9 @@ def print_grid(grid, crew_position, bot_position):
     print(df)
     print()
 
-def decide_bot_move(grid, bot_position, crew_position, V, n, bot_moves):
-    best_bot_move = None
-    min_time_to_center = float('inf')
+def decide_bot_move(grid, bot_position, crew_position, V, n):
 
-    # Evaluate each possible bot move
-    for move in bot_moves:
-        new_bot_pos = (bot_position[0] + move[0], bot_position[1] + move[1])
-        if 0 <= new_bot_pos[0] < n and 0 <= new_bot_pos[1] < n and grid[new_bot_pos[0]][new_bot_pos[1]] != -1:
-            # Assume bot influences crew member's next move
-            P_temp = update_probabilities_with_bot(grid, crew_position, new_bot_pos, n)
-            expected_time = 0
-
-            # Aggregate potential outcomes from this new bot position
-            for i in range(n):
-                for j in range(n):
-                    idx = i * n + j
-                    expected_time += P_temp[crew_position[0] * n + crew_position[1], idx] * V[idx]
-
-            # Select the new bot position if it minimizes the expected time
-            if expected_time < min_time_to_center:
-                min_time_to_center = expected_time
-                best_bot_move = new_bot_pos
-
-    return best_bot_move if best_bot_move else bot_position
-
-
-def get_valid_bot_moves(bot_position, grid, n):
-    valid_moves = []
-    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)]
-    for dx, dy in directions:
-        new_x, new_y = bot_position[0] + dx, bot_position[1] + dy
-        if 0 <= new_x < n and 0 <= new_y < n and grid[new_x][new_y] != -1:
-            valid_moves.append((new_x, new_y))
-    return valid_moves
-
+    return best_move
 
 def simulate_bot_crew_movement(grid, center, bot_toggle = True):
     n = len(grid)
@@ -186,7 +190,7 @@ def simulate_bot_crew_movement(grid, center, bot_toggle = True):
     
     # Compute the optimal policies using value iteration
     P = initialize_probabilities(grid)  # Make sure this is defined correctly
-    V = value_iteration(R, P, V, n)
+    V = value_iteration(grid, R, P, V, n)
     
     steps = 0
     path = [crew_position]
@@ -194,33 +198,37 @@ def simulate_bot_crew_movement(grid, center, bot_toggle = True):
     print("Bot starts at:", bot_position)
     print_grid(grid, crew_position, bot_position)
 
+    def is_valid(x, y):
+                return 0 <= x < n and 0 <= y < n and grid[x][y] != -1
 
     while crew_position != center and steps < 10000:
         if bot_toggle:
-            bot_moves = get_valid_bot_moves(bot_position, grid, n)
-            new_bot_position = decide_bot_move(grid, bot_position, crew_position, V, n, bot_moves)
+            new_bot_position = decide_bot_move(grid, bot_position, crew_position, V, n)
         else:
-            new_bot_position = bot_position
+            new_bot_position = bot_position  # Bot stays put if inactive
+
+        # Determine if the bot is adjacent to the crew
+        if abs(crew_position[0] - new_bot_position[0]) + abs(crew_position[1] - new_bot_position[1]) == 1:
+            # Calculate the best move to maximize distance from bot, fleeing behavior
+            possible_moves = [(dx, dy) for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]
+                              if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
+            if possible_moves:
+                distances = {move: abs(move[0] + crew_position[0] - new_bot_position[0]) + 
+                             abs(move[1] + crew_position[1] - new_bot_position[1])
+                             for move in possible_moves}
+                max_distance = max(distances.values())
+                best_moves = [move for move, dist in distances.items() if dist == max_distance]
+                move_choice = best_moves[np.random.choice(len(best_moves))]
+        else:
+            # Normal random move in cardinal directions
+            possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
+                              if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
+            move_choice = possible_moves[np.random.choice(len(possible_moves))] if possible_moves else (0, 0)
+
+        new_crew_position = (crew_position[0] + move_choice[0], crew_position[1] + move_choice[1])
             
-        # Calculate crew's next move based on updated probabilities
-        P_with_bot = update_probabilities_with_bot(grid, crew_position, new_bot_position, n)
-        crew_probabilities = P_with_bot[crew_position[0] * n + crew_position[1]]
-        next_index = np.random.choice(np.arange(n * n), p=crew_probabilities)
-        new_crew_position = (next_index // n, next_index % n)
 
-        if abs(crew_position[0] - new_bot_position[0]) <= 1 and abs(crew_position[1] - new_bot_position[1]) <= 1:
-            # Flee logic when bot is adjacent in any direction
-            best_move = crew_position
-            max_distance = -1
-            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:  # Only cardinal directions
-                new_pos = (crew_position[0] + dx, crew_position[1] + dy)
-                if 0 <= new_pos[0] < n and 0 <= new_pos[1] < n and grid[new_pos[0]][new_pos[1]] != -1:
-                    distance = abs(bot_position[0] - new_pos[0]) + abs(bot_position[1] - new_pos[1])
-                    if distance > max_distance:
-                        max_distance = distance
-                        best_move = new_pos
-            new_crew_position = best_move
-
+        # Update positions
         bot_position = new_bot_position
         crew_position = new_crew_position
         path.append(crew_position)
@@ -228,7 +236,6 @@ def simulate_bot_crew_movement(grid, center, bot_toggle = True):
         #print_grid(grid, crew_position, bot_position)  # For debugging each step
         steps += 1
         print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
-        
         if steps % 25 == 0 or crew_position == center:  # Print every 10 steps and at the end
             print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
             #print_grid(grid, crew_position, bot_position)
@@ -256,33 +263,34 @@ def simulate_optimal_bot_crew_movement(grid, bot_position, center, V):
     crew_position = initialize_crew_position(grid, center)
     
     steps = 0
+    
+    def is_valid(x, y):
+                return 0 <= x < n and 0 <= y < n and grid[x][y] != -1
+    
+    
     while crew_position != center and steps < 10000:
-        # Update probabilities with bot influence
-        P_with_bot = update_probabilities_with_bot(grid, crew_position, bot_position, n)
-        
-        # Calculate crew's next move based on updated probabilities
-        crew_probabilities = P_with_bot[crew_position[0] * n + crew_position[1]]
-        next_index = np.random.choice(np.arange(n * n), p=crew_probabilities)
-        new_crew_position = (next_index // n, next_index % n)
-        
-        # Move bot towards the best next position
         new_bot_position = decide_bot_move(grid, bot_position, crew_position, V, n)
-        
+
+        # Determine if the bot is adjacent to the crew
         if abs(crew_position[0] - new_bot_position[0]) + abs(crew_position[1] - new_bot_position[1]) == 1:
-            # Calculate the best move to maximize distance from bot
+            # Calculate the best move to maximize distance from bot, fleeing behavior
             possible_moves = [(dx, dy) for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]
-                              if 0 <= crew_position[0] + dx < n and 0 <= crew_position[1] + dy < n and
-                              grid[crew_position[0] + dx][crew_position[1] + dy] != -1]
+                              if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
             if possible_moves:
                 distances = {move: abs(move[0] + crew_position[0] - new_bot_position[0]) + 
-                                    abs(move[1] + crew_position[1] - new_bot_position[1])
+                             abs(move[1] + crew_position[1] - new_bot_position[1])
                              for move in possible_moves}
                 max_distance = max(distances.values())
                 best_moves = [move for move, dist in distances.items() if dist == max_distance]
-                best_indices = [possible_moves.index(move) for move in best_moves]
-                chosen_index = np.random.choice(best_indices)  
-                move_choice = possible_moves[chosen_index]
-                new_crew_position = (crew_position[0] + move_choice[0], crew_position[1] + move_choice[1])
+                move_choice = best_moves[np.random.choice(len(best_moves))]
+        else:
+            # Normal random move in cardinal directions
+            possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
+                              if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
+            move_choice = possible_moves[np.random.choice(len(possible_moves))] if possible_moves else (0, 0)
+
+        new_crew_position = (crew_position[0] + move_choice[0], crew_position[1] + move_choice[1])
+            
 
         # Update positions
         bot_position = new_bot_position
@@ -359,4 +367,3 @@ if __name__ == "__main__":
     
     # Simulate the optimal Bot placement
     #optimal_simulation()
-
