@@ -37,43 +37,31 @@ def initialize_positions(grid, center):
 
 def initialize_probabilities(grid):
     n = len(grid)
-    P = np.zeros((n * n, n * n))
-
-    def is_valid(x, y):
-        return 0 <= x < n and 0 <= y < n and grid[x, y] != -1
+    num_states = n * n
+    P = np.zeros((num_states, num_states))
 
     for i in range(n):
         for j in range(n):
-            if grid[i, j] != -1:
+            if grid[i][j] != -1:  # Check if the current cell is open
                 current_index = i * n + j
-                neighbors = [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
-                valid_neighbors = [idx for idx in neighbors if is_valid(*idx)]
+                neighbors = [
+                    (i - 1, j), (i + 1, j),  # Up, Down
+                    (i, j - 1), (i, j + 1)   # Left, Right
+                ]
+                valid_neighbors = [
+                    (x, y) for x, y in neighbors if 0 <= x < n and 0 <= y < n and grid[x][y] != -1
+                ]
                 if valid_neighbors:
                     prob = 1 / len(valid_neighbors)
-                    for (x, y) in valid_neighbors:
-                        # Set the transition probability initially for expected time
+                    for x, y in valid_neighbors:
                         neighbor_index = x * n + y
                         P[current_index, neighbor_index] = prob
+                        
+    # Normalize probabilities
+    for idx in range(n * n):
+        if np.sum(P[idx, :]) > 0:  # Avoid division by zero
+            P[idx, :] /= np.sum(P[idx, :])
     return P
-
-
-"""def update_probabilities_with_bot(grid, crew_pos, n):
-    P = np.zeros((n * n, n * n))
-    crew_index = crew_pos[0] * n + crew_pos[1]
-
-    def is_valid(x, y):
-        return 0 <= x < n and 0 <= y < n and grid[x][y] != -1
-
-    # Normal random move in cardinal directions
-    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
-    possible_moves = [(crew_pos[0] + dx, crew_pos[1] + dy) for dx, dy in directions if
-                      is_valid(crew_pos[0] + dx, crew_pos[1] + dy)]
-    prob = 1 / len(possible_moves) if possible_moves else 0
-    for move in possible_moves:
-        neighbor_index = move[0] * n + move[1]
-        P[crew_index, neighbor_index] = prob
-
-    return P"""
 
 
 def solve_for_expected_times(P, grid, center):
@@ -119,10 +107,9 @@ def initialize_reward_and_value_functions(grid, center):
                             crew_index = crew_i * n + crew_j
                             # Distance to teleport pad, inverse the relation to have highest reward near center
                             distance = abs(crew_i - center[0]) + abs(crew_j - center[1])
-                            R[bot_index, crew_index] = (2 * (n - 1)) - distance
+                            R[bot_index, crew_index] = np.exp(-distance)
 
-    # Initialize with a high but finite initial cost instead of inf
-    V = np.full((num_states, num_states), 1e3)  # Large number but not inf
+    V = np.full((num_states, num_states), 3e2)  # Initial guess is 300
     # Set known states directly related to the goal (e.g., crew at teleport pad) to zero
     for bot_index in range(num_states):
         teleport_index = center[0] * n + center[1]
@@ -130,66 +117,49 @@ def initialize_reward_and_value_functions(grid, center):
     return R, V
 
 
-def value_iteration(grid, reward, value, n, gamma=0.75, threshold=0.1):
-    num_states = n * n
-    delta = float('inf')
+def value_iteration(grid, R, V, n, gamma=0.8, threshold=0.1, max_iterations=3):
 
-    while delta >= threshold:
-        delta = 0
-        for bot_index in range(num_states):
-            if grid[bot_index // n][bot_index % n] == -1:
-                continue  # Skip calculations for bot positions in blocked cells
+    for iteration in range(max_iterations):
+        V_prev = np.copy(V)  # Keep a copy of the previous values to check for convergence
 
-            for crew_index in range(num_states):
-                if grid[crew_index // n][crew_index % n] == -1:
-                    continue  # Skip calculations for crew positions in blocked cells
+        for bot_i in range(n):
+            for bot_j in range(n):
+                bot_index = bot_i * n + bot_j
+                if grid[bot_i][bot_j] == -1:
+                    continue  # Skip if the bot's position is blocked
 
-                v = value[bot_index, crew_index]
-                max_value = float('-inf')
-                bot_actions = get_valid_actions(bot_index, grid, n)  # Retrieve valid actions for the bot
+                for crew_i in range(n):
+                    for crew_j in range(n):
+                        crew_index = crew_i * n + crew_j
+                        if grid[crew_i][crew_j] == -1:
+                            continue  # Skip if the crew's position is blocked
 
-                for action in bot_actions:
-                    expected_value = 0
-                    next_bot_states = get_next_states(bot_index, action, grid, n)
+                        # Initialize expected time very high
+                        expected_time = float('inf')
+                        new_time = 0
 
-                    for next_bot_index in next_bot_states:
-                        crew_actions = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # Crew can move in four cardinal directions
-                        for ca in crew_actions:
-                            next_crew_states = get_next_states(crew_index, ca, grid, n)
-                            for next_crew_index in next_crew_states:
-                                transition_prob = 1 / len(crew_actions) if len(crew_actions) > 0 else 0
-                                expected_value += transition_prob * value[next_bot_index, next_crew_index]
-                    action_value = (reward[bot_index, crew_index] + gamma * expected_value)
-                    max_value = max(max_value, action_value)
+                        # Consider only cardinal directions for the crew
+                        for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            next_i, next_j = crew_i + di, crew_j + dj
+                            if 0 <= next_i < n and 0 <= next_j < n and grid[next_i][next_j] != -1:
+                                next_index = next_i * n + next_j
+                                # Calculate expected time if crew moves to next_index
+                                new_time += (0.25 * R[bot_index, next_index]) + (gamma * V[bot_index, next_index])
+                                
+                                if new_time < expected_time:
+                                    expected_time = new_time
 
-                new_v = max_value if max_value != float('-inf') else v
-                value[bot_index, crew_index] = new_v
-                delta = max(delta, abs(v - new_v))
-                print(f"Delta: {delta}")
-                print(f"Value: {value[bot_index, crew_index]}")
+                        # Update the value for this bot-crew configuration
+                        V[bot_index, crew_index] = expected_time
 
-    return value
+        # Calculate delta to check for convergence
+        delta = np.max(np.abs(V - V_prev))
+        if delta < threshold:
+            print(f"Convergence achieved after {iteration+1} iterations.")
+            break
+        print(f"Iteration {iteration}: Delta = {delta}")
 
-
-def get_valid_actions(index, grid, n):
-    x, y = index // n, index % n
-    actions = []
-    # Allow diagonal movements for the bot
-    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
-    for dx, dy in directions:
-        new_x, new_y = x + dx, y + dy
-        if 0 <= new_x < n and 0 <= new_y < n and grid[new_x][new_y] != -1:
-            actions.append((dx, dy))
-    return actions
-
-
-def get_next_states(index, action, grid, n):
-    x, y = index // n, index % n
-    dx, dy = action
-    new_x, new_y = x + dx, y + dy
-    if 0 <= new_x < n and 0 <= new_y < n and grid[new_x][new_y] != -1:
-        return [new_x * n + new_y]  # Return a list of one next state
-    return [index]  # Return the current state in a list if no valid move
+    return V
 
 
 def print_grid(grid, crew_position, bot_position):
@@ -205,38 +175,22 @@ def print_grid(grid, crew_position, bot_position):
 
 
 def decide_bot_move(grid, bot_position, crew_position, V, n):
-    actions = [(0,0),(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1),
-               (-1, -1)]
+    directions = [(0, 0), (0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
     min_time = float('inf')
-    best_move = bot_position
+    best_move = bot_position  # Default to staying in place if no better move is found
 
-    def is_valid(x, y):
-        return 0 <= x < n and 0 <= y < n and grid[x, y] != -1
+    bot_x, bot_y = bot_position
+    crew_x, crew_y = crew_position
+    crew_index = crew_x * n + crew_y
 
-    # Iterate through each possible action
-    for dx, dy in actions:
-        new_bot_x, new_bot_y = bot_position[0] + dx, bot_position[1] + dy
-        if is_valid(new_bot_x, new_bot_y):
-            # Calculate the expected time for this move
-            expected_time = 0
-            # Assuming equal probability for each crew move initially (you'll adjust based on actual probabilities)
-            possible_crew_moves = [(0, 1), (1, 0), (0, -1), (-1, 0)]
-            for dcx, dcy in possible_crew_moves:
-                new_crew_x, new_crew_y = crew_position[0] + dcx, crew_position[1] + dcy
-                if is_valid(new_crew_x, new_crew_y):
-                    crew_index = new_crew_x * n + new_crew_y
-                    bot_index = new_bot_x * n + new_bot_y
-                    probability = 1 / len(possible_crew_moves)  # Simplified uniform probability
-                    expected_time += probability * V[bot_index, crew_index]
-
-            # Add time step
-            total_time = 1 + expected_time
-            print(f"Total Time: {total_time}, Min Time: {min_time}")
-            # Update the best move if this one is better
-            if total_time < min_time:
-                min_time = total_time
+    for dx, dy in directions:
+        new_bot_x, new_bot_y = bot_x + dx, bot_y + dy
+        if 0 <= new_bot_x < n and 0 <= new_bot_y < n and grid[new_bot_x][new_bot_y] != -1:
+            new_bot_index = new_bot_x * n + new_bot_y
+            # Evaluate the expected time at the new bot position with the crew unchanged
+            if V[new_bot_index, crew_index] < min_time:
+                min_time = V[new_bot_index, crew_index]
                 best_move = (new_bot_x, new_bot_y)
-                print(f"Picked a move: {best_move}")
 
     return best_move
 
@@ -248,9 +202,7 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
 
     # Initialize reward and value functions
     R, V = initialize_reward_and_value_functions(grid, center)
-
-    # Compute the optimal policies using value iteration
-    # P = initialize_probabilities(grid)
+    
     V = value_iteration(grid, R, V, n)
 
     steps = 0
