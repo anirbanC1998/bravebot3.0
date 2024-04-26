@@ -91,73 +91,66 @@ def solve_for_expected_times(P, grid, center):
     return T.reshape((n, n))
 
 
-def initialize_reward_and_value_functions(grid, center):
+def value_function(grid, center):
     n = len(grid)
     num_states = n * n
-    R = np.zeros((num_states, num_states))  # Reward matrix for all bot and crew combinations
-    V = np.zeros((num_states, num_states))  # Value function matrix for all bot and crew combinations
-
-    for bot_i in range(n):
-        for bot_j in range(n):
-            if grid[bot_i, bot_j] != -1:  # Bot must be in a valid cell
-                bot_index = bot_i * n + bot_j
-                for crew_i in range(n):
-                    for crew_j in range(n):
-                        if grid[crew_i, crew_j] != -1:  # Crew must also be in a valid cell
-                            crew_index = crew_i * n + crew_j
-                            # Distance to teleport pad, inverse the relation to have highest reward near center
-                            distance = abs(crew_i - center[0]) + abs(crew_j - center[1])
-                            R[bot_index, crew_index] = np.exp(-distance)
-
-    V = np.full((num_states, num_states), 3e2)  # Initial guess is 300
+    V = np.full((num_states, num_states), 3e2)  # Initial guess is 300 from T_noBot
     # Set known states directly related to the goal (e.g., crew at teleport pad) to zero
     for bot_index in range(num_states):
         teleport_index = center[0] * n + center[1]
         V[bot_index, teleport_index] = 0
-    return R, V
+    return V
 
 
-def value_iteration(grid, R, V, n, gamma=0.8, threshold=0.1, max_iterations=3):
+def value_iteration(grid, V, n, threshold=0.001, max_iterations=300):
+    num_states = n * n
+    center_i, center_j = n // 2, n // 2 
 
     for iteration in range(max_iterations):
-        V_prev = np.copy(V)  # Keep a copy of the previous values to check for convergence
+        V_prev = np.copy(V)
 
-        for bot_i in range(n):
-            for bot_j in range(n):
-                bot_index = bot_i * n + bot_j
-                if grid[bot_i][bot_j] == -1:
-                    continue  # Skip if the bot's position is blocked
+        for bot_index in range(num_states):
+            bot_i, bot_j = bot_index // n, bot_index % n
+            if grid[bot_i][bot_j] == -1:
+                continue
 
-                for crew_i in range(n):
-                    for crew_j in range(n):
-                        crew_index = crew_i * n + crew_j
-                        if grid[crew_i][crew_j] == -1:
-                            continue  # Skip if the crew's position is blocked
+            for crew_index in range(num_states):
+                crew_i, crew_j = crew_index // n, crew_index % n
+                if grid[crew_i][crew_j] == -1:
+                    continue
+                
+                is_adjacent = False
+                if abs(bot_i - crew_i) + abs(bot_j - crew_j) == 1: is_adjacent = True
+                possible_times = []
 
-                        # Initialize expected time very high
-                        expected_time = float('inf')
-                        new_time = 0
+                # Evaluate how the bot can influence the crew member towards the center
+                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    new_crew_i, new_crew_j = crew_i + di, crew_j + dj
+                    if 0 <= new_crew_i < n and 0 <= new_crew_j < n and grid[new_crew_i][new_crew_j] != -1:
+                        new_crew_index = new_crew_i * n + new_crew_j
+                        distance_to_center = abs(new_crew_i - center_i) + abs(new_crew_j - center_j)
 
-                        # Consider only cardinal directions for the crew
-                        for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            next_i, next_j = crew_i + di, crew_j + dj
-                            if 0 <= next_i < n and 0 <= next_j < n and grid[next_i][next_j] != -1:
-                                next_index = next_i * n + next_j
-                                # Calculate expected time if crew moves to next_index
-                                new_time += (0.25 * R[bot_index, next_index]) + (gamma * V[bot_index, next_index])
-                                
-                                if new_time < expected_time:
-                                    expected_time = new_time
+                        # Adjust probability based on whether the bot is adjacent
+                        transition_prob = 0.25
+                        if is_adjacent:
+                            # Increase probability if this direction decreases the distance to the center
+                            # Decrease probability otherwise
+                            current_distance = abs(crew_i - center_i) + abs(crew_j - center_j)
+                            transition_prob *= 2 if distance_to_center < current_distance else 0.9
 
-                        # Update the value for this bot-crew configuration
-                        V[bot_index, crew_index] = expected_time
+                        # Calculate the expected time considering reduced distance to center
+                        expected_time = transition_prob * (1 + V[bot_index, new_crew_index])
+                        possible_times.append(expected_time)
 
-        # Calculate delta to check for convergence
+                if possible_times:
+                    V[bot_index, crew_index] = min(possible_times)  # Minimize the expected time
+
         delta = np.max(np.abs(V - V_prev))
         if delta < threshold:
-            print(f"Convergence achieved after {iteration+1} iterations.")
+            print(f"Convergence achieved after {iteration + 1} iterations.")
             break
         print(f"Iteration {iteration}: Delta = {delta}")
+            
 
     return V
 
@@ -175,19 +168,17 @@ def print_grid(grid, crew_position, bot_position):
 
 
 def decide_bot_move(grid, bot_position, crew_position, V, n):
-    directions = [(0, 0), (0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
     min_time = float('inf')
-    best_move = bot_position  # Default to staying in place if no better move is found
+    best_move = bot_position
 
     bot_x, bot_y = bot_position
     crew_x, crew_y = crew_position
     crew_index = crew_x * n + crew_y
 
-    for dx, dy in directions:
+    for dx, dy in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)]:
         new_bot_x, new_bot_y = bot_x + dx, bot_y + dy
         if 0 <= new_bot_x < n and 0 <= new_bot_y < n and grid[new_bot_x][new_bot_y] != -1:
             new_bot_index = new_bot_x * n + new_bot_y
-            # Evaluate the expected time at the new bot position with the crew unchanged
             if V[new_bot_index, crew_index] < min_time:
                 min_time = V[new_bot_index, crew_index]
                 best_move = (new_bot_x, new_bot_y)
@@ -201,9 +192,23 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
     crew_position, bot_position = initialize_positions(grid, center)
 
     # Initialize reward and value functions
-    R, V = initialize_reward_and_value_functions(grid, center)
+    V = value_function(grid, center)
     
-    V = value_iteration(grid, R, V, n)
+    V = value_iteration(grid, V, n)
+    
+    V_reduced = np.full((n, n), np.inf)
+    for crew_i in range(n):
+        for crew_j in range(n):
+            crew_index = crew_i * n + crew_j
+            min_time_for_crew = np.min(V[:, crew_index])  # Minimum over all bot positions
+            V_reduced[crew_i, crew_j] = min_time_for_crew
+    
+    # Using Pandas DataFrame for better print
+    df = pd.DataFrame(V_reduced , index=[f"{i}" for i in range(V_reduced.shape[0])],
+                      columns=[f"{j}" for j in range(V_reduced.shape[1])])
+    print("Expected times to reach the teleport pad for T_Bot:")
+    print(df)
+    
 
     steps = 0
     path = [crew_position]
@@ -245,10 +250,10 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
         crew_position = new_crew_position
         path.append(crew_position)
 
-        # print_grid(grid, crew_position, bot_position)  # For debugging each step
+        #print_grid(grid, crew_position, bot_position)  # For debugging each step
         steps += 1
-        print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
-        if steps % 25 == 0 or crew_position == center:  # Print every 10 steps and at the end
+        #print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
+        if steps % 10 == 0 or crew_position == center:  # Print every 10 steps and at the end
             print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
             # print_grid(grid, crew_position, bot_position)
 
@@ -309,7 +314,7 @@ def simulate_optimal_bot_crew_movement(grid, bot_position, center, V):
         crew_position = new_crew_position
         steps += 1
 
-    return crew_position, steps
+    return steps
 
 
 def main_simulation():
@@ -320,7 +325,7 @@ def main_simulation():
     # Using Pandas DataFrame for better print
     df = pd.DataFrame(mdv_transition_matrix, index=[f"{i}" for i in range(mdv_transition_matrix.shape[0])],
                       columns=[f"{j}" for j in range(mdv_transition_matrix.shape[1])])
-    print("Expected times to reach the teleport pad:")
+    print("Expected times to reach the teleport pad for T_NoBot:")
     print(df)
 
     # Simulate optimal Bot movement
@@ -338,7 +343,7 @@ def optimal_simulation():
     # Using Pandas DataFrame for better print
     df = pd.DataFrame(mdv_transition_matrix, index=[f"{i}" for i in range(mdv_transition_matrix.shape[0])],
                       columns=[f"{j}" for j in range(mdv_transition_matrix.shape[1])])
-    print("Expected times to reach the teleport pad:")
+    print("Expected times to reach the teleport pad for T_NoBot:")
     print(df)
 
     n = len(grid)
@@ -346,8 +351,21 @@ def optimal_simulation():
     best_time = float('inf')
     results = {}
 
-    R, V = initialize_reward_and_value_functions(grid, center)
-    V = value_iteration(grid, R, V, n)
+    V = value_function(grid, center)
+    V = value_iteration(grid, V, n)
+    
+    V_reduced = np.full((n, n), np.inf)
+    for crew_i in range(n):
+        for crew_j in range(n):
+            crew_index = crew_i * n + crew_j
+            min_time_for_crew = np.min(V[:, crew_index])  # Minimum over all bot positions
+            V_reduced[crew_i, crew_j] = min_time_for_crew
+    
+    # Using Pandas DataFrame for better print
+    df = pd.DataFrame(V_reduced , index=[f"{i}" for i in range(V_reduced.shape[0])],
+                      columns=[f"{j}" for j in range(V_reduced.shape[1])])
+    print("Expected times to reach the teleport pad for T_Bot:")
+    print(df)
 
     # Test each valid position on the grid
     for i in range(n):
@@ -355,7 +373,7 @@ def optimal_simulation():
             if grid[i][j] != -1:  # Ensure the bot does not start in a blocked cell
                 bot_position = (i, j)
                 # print(f"Testing bot start position at {bot_position}")
-                _, time_taken = simulate_optimal_bot_crew_movement(grid, bot_position, center, V)
+                time_taken = simulate_optimal_bot_crew_movement(grid, bot_position, center, V)
                 results[bot_position] = time_taken
                 if time_taken < best_time:
                     best_time = time_taken
@@ -370,11 +388,12 @@ if __name__ == "__main__":
     pd.set_option('display.max_columns', None)  # Ensures all columns are displayed
     pd.set_option('display.width', None)  # Adjusts the display width for wide DataFrames
 
-    np.random.seed(0)  # Fixing Ship Layout, Crew, and Bot Position
+    np.random.seed(3)  # Fixing Ship Layout, Crew, and Bot Position
     # 0, 3, 5, 12 are good fixed layouts
 
     # Basic simlulation using fixed Crew and fixed Bot placement
-    main_simulation()
+    #main_simulation()
 
     # Simulate the optimal Bot placement
-    # optimal_simulation()
+    optimal_simulation()
+    
