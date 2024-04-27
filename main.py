@@ -1,5 +1,11 @@
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 
 def initialize_grid(n=11, blocked_cells_count=10):
@@ -382,12 +388,183 @@ def optimal_simulation():
     print(f"Optimal bot position is {best_position} with expected time {best_time}")
     return best_position, results
 
+def training_bot_crew_movement(grid, center, bot_toggle):
+    n = len(grid)
+    # Random initial positions for crew and bot, ensuring they are valid
+    crew_position, bot_position = initialize_positions(grid, center)
+    
+    # Initialize reward and value functions
+    V = value_function(grid, center)
+    V = value_iteration(grid, V, n)
+    
+    #Save the Bot and Crew configuration when they succeed
+    training_data = []
+    
+    steps = 0
+    path = [crew_position]
+    #print("Crew starts at:", crew_position)
+    
+    def is_valid(x, y):
+        return 0 <= x < n and 0 <= y < n and grid[x][y] != -1
+    
+    while crew_position != center and steps < 10000:
+        if bot_toggle:
+            new_bot_position = decide_bot_move(grid, bot_position, crew_position, V, n)
+            # Save the action for bot movement
+            action = (new_bot_position[0] - bot_position[0], new_bot_position[1] - bot_position[1])
+        else:
+            new_bot_position = bot_position  # Bot stays put if inactive
+            action = (0, 0)
+
+        # Determine if the bot is adjacent to the crew
+        if abs(crew_position[0] - new_bot_position[0]) + abs(crew_position[1] - new_bot_position[1]) == 1:
+            # Calculate the best move to maximize distance from bot, fleeing behavior
+            possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
+                              if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
+            if possible_moves:
+                distances = {move: abs(move[0] + crew_position[0] - new_bot_position[0]) +
+                                   abs(move[1] + crew_position[1] - new_bot_position[1])
+                             for move in possible_moves}
+                max_distance = max(distances.values())
+                best_moves = [move for move, dist in distances.items() if dist == max_distance]
+                move_choice = best_moves[np.random.choice(len(best_moves))]
+        else:
+            # Normal random move in cardinal directions
+            possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
+                              if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
+            move_choice = possible_moves[np.random.choice(len(possible_moves))] if possible_moves else (0, 0)
+
+        new_crew_position = (crew_position[0] + move_choice[0], crew_position[1] + move_choice[1])
+        
+        # Record the state and action
+        training_data.append([bot_position[0], bot_position[1], crew_position[0], crew_position[1], action])
+        
+        # Update positions
+        bot_position = new_bot_position
+        crew_position = new_crew_position
+        path.append(crew_position)
+
+        #print_grid(grid, crew_position, bot_position)  # For debugging each step
+        steps += 1
+        #print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
+        #if steps % 10 == 0 or crew_position == center:  # Print every 10 steps and at the end
+            #print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
+            # print_grid(grid, crew_position, bot_position)
+
+        if crew_position == center:
+            print("Crew reaches the teleport pad at step", steps)
+            print_grid(grid, crew_position, bot_position)
+            break
+    
+
+    # Convert data to DataFrame for Neural Network
+    df = pd.DataFrame(training_data, columns=['bot_x', 'bot_y', 'crew_x', 'crew_y', 'action'])
+    return df
+
+# Classification Bot
+class ClassificationBot(nn.Module):
+    def __init__(self):
+        super(ClassificationBot, self).__init__()
+        self.fc1 = nn.Linear(4, 256)  # 4 inputs
+        self.bn1 = nn.BatchNorm1d(256)  # Batch normalization
+        self.dropout1 = nn.Dropout(0.1)
+        self.fc2 = nn.Linear(256, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+        self.dropout2 = nn.Dropout(0.1)
+        self.fc3 = nn.Linear(256, 128)  
+        self.bn3 = nn.BatchNorm1d(128)
+        self.dropout3 = nn.Dropout(0.25)
+        self.fc4 = nn.Linear(128, 9)  # 9 outputs
+        
+    def forward(self, x):
+        x = self.dropout1(torch.relu(self.bn1(self.fc1(x))))
+        x = self.dropout2(torch.relu(self.bn2(self.fc2(x))))
+        x = self.dropout3(torch.relu(self.bn3(self.fc3(x))))
+        return torch.log_softmax(self.fc4(x), dim=1)
+
+
+def get_training_data():
+    grid, center = initialize_grid()
+    #P_no_bot = initialize_probabilities(grid)
+    #mdv_transition_matrix = solve_for_expected_times(P_no_bot, grid, center)
+
+    """# Using Pandas DataFrame for better print
+    df = pd.DataFrame(mdv_transition_matrix, index=[f"{i}" for i in range(mdv_transition_matrix.shape[0])],
+                      columns=[f"{j}" for j in range(mdv_transition_matrix.shape[1])])
+    print("Expected times to reach the teleport pad for T_NoBot:")
+    print(df)"""
+
+    # Get training data from main simulation into an array
+    df = training_bot_crew_movement(grid, center, True)
+   
+   # Make it into a CSV
+    df.to_csv('training_data.csv', index = False)
+    
+def neural_network():
+    
+    # Load and prepare data
+    df = pd.read_csv('training_data.csv')
+    X = df[['bot_x', 'bot_y', 'crew_x', 'crew_y']].values
+    y = pd.get_dummies(df['action']).values
+    
+    
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=3)
+
+    # Normalize data
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+
+    # Convert to PyTorch tensors
+    X_train = torch.tensor(X_train, dtype=torch.float32)
+    y_train = torch.tensor(y_train, dtype=torch.float32)
+    X_test = torch.tensor(X_test, dtype=torch.float32)
+    y_test = torch.tensor(y_test, dtype=torch.float32)
+
+    # Create datasets
+    train_dataset = TensorDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
+    
+    # Initialize model
+    model = ClassificationBot()
+    loss_function = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay= 0.01)
+    
+    
+    # Training loop
+    for epoch in range(200):
+        for inputs, labels in train_loader:
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = loss_function(outputs, torch.max(labels, 1)[1])
+            loss.backward()
+            optimizer.step()
+        print(f"Epoch: {epoch}, Loss: {loss.item()}")
+
+    # Evaluate model
+    model.eval()
+    results = []
+    with torch.no_grad():
+        outputs = model(X_test)
+        _, predicted = torch.max(outputs.data, 1)
+        _, labels = torch.max(y_test.data, 1)
+        accuracy = (predicted == labels).sum().item() / labels.size(0)
+        print(f"Test Accuracy: {accuracy}")
+        results.extend(zip(X_test.numpy(), predicted.numpy(), labels.numpy()))
+    
+    results_df = pd.DataFrame(results, columns=['Inputs', 'Predicted', 'Actual'])
+    results_df.to_csv('model_output.csv', index=False)
+    
+
+
 
 if __name__ == "__main__":
     pd.set_option('display.max_rows', None)  # Ensures all rows are displayed
     pd.set_option('display.max_columns', None)  # Ensures all columns are displayed
     pd.set_option('display.width', None)  # Adjusts the display width for wide DataFrames
-
+    
     np.random.seed(3)  # Fixing Ship Layout, Crew, and Bot Position
     # 0, 3, 5, 12 are good fixed layouts
 
@@ -395,5 +572,11 @@ if __name__ == "__main__":
     #main_simulation()
 
     # Simulate the optimal Bot placement
-    optimal_simulation()
+    #optimal_simulation()
+    
+    #Train Neural Network
+    #get_training_data()
+    
+    neural_network()
+    
     
