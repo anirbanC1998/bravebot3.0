@@ -6,15 +6,14 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from itertools import combinations
 
 
+# Initialize grid for no_bot and bot simulation, with fixed cells and open paths
 def initialize_grid(n=11, blocked_cells_count=10):
     grid = np.zeros((n, n))
     center = (n // 2, n // 2)
-    grid[center] = 0  # Teleport pad
+    grid[center] = 0
 
-    # Having the diagonal cells in relation to the center to be blocked
     for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
         grid[center[0] + dx, center[1] + dy] = -1
 
@@ -23,13 +22,13 @@ def initialize_grid(n=11, blocked_cells_count=10):
     blocked_indices = np.random.choice(flat_indices, size=blocked_cells_count, replace=False)
     grid[np.unravel_index(blocked_indices, (n, n))] = -1
 
-    # Having the cells next to the teleport pad to be empty
     for dx, dy in [(0, -1), (0, 1), (1, 0), (-1, 0)]:
         grid[center[0] + dx, center[1] + dy] = 0
 
     return grid, center
 
 
+# Initialize crew and bot positions, bot and crew cannot intersect each other
 def initialize_positions(grid, center):
     n = len(grid)
     crew_position = (np.random.randint(n), np.random.randint(n))
@@ -42,6 +41,8 @@ def initialize_positions(grid, center):
     return crew_position, bot_position
 
 
+# Initialize transition probabilities to solve for expected times
+# In T_NoBot scenario
 def initialize_probabilities(grid):
     n = len(grid)
     num_states = n * n
@@ -49,15 +50,10 @@ def initialize_probabilities(grid):
 
     for i in range(n):
         for j in range(n):
-            if grid[i][j] != -1:  # Check if the current cell is open
+            if grid[i][j] != -1:
                 current_index = i * n + j
-                neighbors = [
-                    (i - 1, j), (i + 1, j),  # Up, Down
-                    (i, j - 1), (i, j + 1)  # Left, Right
-                ]
-                valid_neighbors = [
-                    (x, y) for x, y in neighbors if 0 <= x < n and 0 <= y < n and grid[x][y] != -1
-                ]
+                neighbors = [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
+                valid_neighbors = [(x, y) for x, y in neighbors if 0 <= x < n and 0 <= y < n and grid[x][y] != -1]
                 if valid_neighbors:
                     prob = 1 / len(valid_neighbors)
                     for x, y in valid_neighbors:
@@ -65,30 +61,31 @@ def initialize_probabilities(grid):
                         P[current_index, neighbor_index] = prob
 
     # Normalize probabilities
-    for idx in range(n * n):
-        if np.sum(P[idx, :]) > 0:  # Avoid division by zero
-            P[idx, :] /= np.sum(P[idx, :])
+    for x in range(num_states):
+        if np.sum(P[x, :]) > 0:
+            P[x, :] /= np.sum(P[x, :])
     return P
 
 
+# Solve for expected times using P
 def solve_for_expected_times(P, grid, center):
     n = len(grid)
-    num_cells = n * n  # n^2 for every cell in the grid in terms of possibilities
-    A = np.zeros((num_cells, num_cells))
-    b = np.ones(num_cells)
+    num_states = n * n
+    A = np.zeros((num_states, num_states))
+    b = np.ones(num_states)
 
     for i in range(n):
         for j in range(n):
             idx = i * n + j
-            if grid[i, j] == -1:  # Check if the cell is blocked
-                A[idx, idx] = 1  # Set the diagonal to 1 to keep the equation consistent
-                b[idx] = 0  # Set the corresponding b value to 0 for blocked cells
+            if grid[i, j] == -1: 
+                A[idx, idx] = 1
+                b[idx] = 0
             elif (i, j) == center:
-                A[idx, :] = 0  # Set entire row to 0
-                A[idx, idx] = 1  # Set the diagonal to 1
-                b[idx] = 0  # Expected time to reach the pad from the pad is 0
+                A[idx, :] = 0
+                A[idx, idx] = 1
+                b[idx] = 0
             else:
-                A[idx, idx] = 1  # Set the diagonal element
+                A[idx, idx] = 1
                 for (x, y) in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]:
                     if 0 <= x < n and 0 <= y < n and grid[x, y] != -1:
                         neighbor_idx = x * n + y
@@ -394,7 +391,7 @@ def training_bot_crew_movement(grid, center, bot_toggle):
     crew_position, bot_position = initialize_positions(grid, center)
 
     # Print grid for debugging generalized data
-    #print_grid(grid, crew_position, bot_position)
+    # print_grid(grid, crew_position, bot_position)
 
     # Initialize reward and value functions
     V = value_function(grid, center)
@@ -541,7 +538,7 @@ class ClassificationBot(nn.Module):
         self.fc1 = nn.Linear(4, 128)  # 4 inputs: Bot Actions and Crew Actions
         self.bn1 = nn.BatchNorm1d(128)  # Batch Normalization
         self.dropout1 = nn.Dropout(0.2)  # Dropout Layer
-        self.fc2 = nn.Linear(128, 128) # Duplicate the Layer
+        self.fc2 = nn.Linear(128, 128)  # Duplicate the Layer
         self.bn2 = nn.BatchNorm1d(128)
         self.dropout2 = nn.Dropout(0.2)
         self.fc3 = nn.Linear(128, 9)  # 9 outputs: 8 actions + 1 success indicator
@@ -558,8 +555,8 @@ def neural_network():
     X = df[['bot_x', 'bot_y', 'crew_x', 'crew_y']].values
     # Need to merge action and success into a single label set, reduces complexity for the CNN
     y_actions = pd.get_dummies(df['action']).values
-    y_success = df['success'].values.reshape(-1, 1) 
-    y = np.concatenate((y_actions, y_success), axis=1) 
+    y_success = df['success'].values.reshape(-1, 1)
+    y = np.concatenate((y_actions, y_success), axis=1)
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=5)
 
@@ -618,15 +615,15 @@ if __name__ == "__main__":
     # 0, 3, 5, 12 are good fixed layouts
 
     # Basic simlulation using fixed Crew and fixed Bot placement
-    # main_simulation()
+    main_simulation()
 
     # Simulate the optimal Bot placement
     # optimal_simulation()
 
     # Train Neural Network
-    #get_training_data()
+    # get_training_data()
 
     # Generalizing Training Data
-    generate_ship_configurations()
+    # generate_ship_configurations()
 
-    neural_network()
+    # neural_network()
