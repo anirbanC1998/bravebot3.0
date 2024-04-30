@@ -394,7 +394,7 @@ def training_bot_crew_movement(grid, center, bot_toggle):
     crew_position, bot_position = initialize_positions(grid, center)
 
     # Print grid for debugging generalized data
-    print_grid(grid, crew_position, bot_position)
+    #print_grid(grid, crew_position, bot_position)
 
     # Initialize reward and value functions
     V = value_function(grid, center)
@@ -492,7 +492,7 @@ def get_training_data():
     df.to_csv('training_data.csv', index=False)
 
 
-def generate_ship_configurations(n=11, random_blocks=10, total_configs=500):
+def generate_ship_configurations(n=11, random_blocks=10, total_configs=10000):
     center = (n // 2, n // 2)  # Center for teleport pad
     fixed_blocks = [(center[0] - 1, center[1] - 1), (center[0] - 1, center[1] + 1),
                     (center[0] + 1, center[1] - 1),
@@ -540,8 +540,8 @@ class ClassificationBot(nn.Module):
         super(ClassificationBot, self).__init__()
         self.fc1 = nn.Linear(4, 128)  # 4 inputs: Bot Actions and Crew Actions
         self.bn1 = nn.BatchNorm1d(128)  # Batch Normalization
-        self.dropout1 = nn.Dropout(0.2)  # Dropout Regularization
-        self.fc2 = nn.Linear(128, 128)
+        self.dropout1 = nn.Dropout(0.2)  # Dropout Layer
+        self.fc2 = nn.Linear(128, 128) # Duplicate the Layer
         self.bn2 = nn.BatchNorm1d(128)
         self.dropout2 = nn.Dropout(0.2)
         self.fc3 = nn.Linear(128, 9)  # 9 outputs: 8 actions + 1 success indicator
@@ -556,10 +556,10 @@ def neural_network():
     df = pd.read_csv('training_data.csv')
     # Assuming 'action' is encoded as one-hot and 'success' is a binary column
     X = df[['bot_x', 'bot_y', 'crew_x', 'crew_y']].values
-    # Need to merge action and success into a single label set
+    # Need to merge action and success into a single label set, reduces complexity for the CNN
     y_actions = pd.get_dummies(df['action']).values
-    y_success = df['success'].values.reshape(-1, 1)
-    y = np.concatenate((y_actions, y_success), axis=1)
+    y_success = df['success'].values.reshape(-1, 1) 
+    y = np.concatenate((y_actions, y_success), axis=1) 
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=5)
 
@@ -624,9 +624,9 @@ if __name__ == "__main__":
     # optimal_simulation()
 
     # Train Neural Network
-    # get_training_data()
+    #get_training_data()
 
     # Generalizing Training Data
-    #generate_ship_configurations()
+    generate_ship_configurations()
 
     neural_network()
