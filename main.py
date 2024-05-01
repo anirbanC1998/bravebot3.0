@@ -67,7 +67,8 @@ def initialize_probabilities(grid):
     return P
 
 
-# Solve for expected times using P
+# Solve for expected times using P, zero out the center and relative to the amount of cells in the grid,
+# calculate the expected times using matrix algebra
 def solve_for_expected_times(P, grid, center):
     n = len(grid)
     num_states = n * n
@@ -94,17 +95,20 @@ def solve_for_expected_times(P, grid, center):
     T = np.linalg.solve(A, b)
     return T.reshape((n, n))
 
-
+# Set the initial guess for values at 300, relative to the high possible expected steps from T_noBot
+# and set the center to 0 as always
 def value_function(grid, center):
     n = len(grid)
     num_states = n * n
-    V = np.full((num_states, num_states), 3e2)  # Initial guess is 300 from T_noBot
-    # Set known states directly related to the goal (e.g., crew at teleport pad) to zero
+    V = np.full((num_states, num_states), 3e2)
     for bot_index in range(num_states):
         teleport_index = center[0] * n + center[1]
         V[bot_index, teleport_index] = 0
     return V
 
+# Perform value_iterations for each T_bot_crew(cell) by prioritizing shortening the distance
+# between the crew member and center, and sticking to the crew member when adjacent
+# Makes sure to only input the minimized possible time in each cell
 
 def value_iteration(grid, V, n, threshold=0.001, max_iterations=300):
     num_states = n * n
@@ -127,7 +131,6 @@ def value_iteration(grid, V, n, threshold=0.001, max_iterations=300):
                 if abs(bot_i - crew_i) + abs(bot_j - crew_j) == 1: is_adjacent = True
                 possible_times = []
 
-                # Evaluate how the bot can influence the crew member towards the center
                 for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                     new_crew_i, new_crew_j = crew_i + di, crew_j + dj
                     if 0 <= new_crew_i < n and 0 <= new_crew_j < n and grid[new_crew_i][new_crew_j] != -1:
@@ -137,17 +140,13 @@ def value_iteration(grid, V, n, threshold=0.001, max_iterations=300):
                         # Adjust probability based on whether the bot is adjacent
                         transition_prob = 0.25
                         if is_adjacent:
-                            # Increase probability if this direction decreases the distance to the center
-                            # Decrease probability otherwise
                             current_distance = abs(crew_i - center_i) + abs(crew_j - center_j)
                             transition_prob *= 2 if distance_to_center < current_distance else 0.9
-
-                        # Calculate the expected time considering reduced distance to center
                         expected_time = transition_prob * (1 + V[bot_index, new_crew_index])
                         possible_times.append(expected_time)
 
                 if possible_times:
-                    V[bot_index, crew_index] = min(possible_times)  # Minimize the expected time
+                    V[bot_index, crew_index] = min(possible_times)
 
         delta = np.max(np.abs(V - V_prev))
         if delta < threshold:
@@ -157,18 +156,21 @@ def value_iteration(grid, V, n, threshold=0.001, max_iterations=300):
 
     return V
 
+# Print the grid at each time step
 
 def print_grid(grid, crew_position, bot_position):
     display_grid = np.array([' ' if x == 0 else 'X' for x in grid.flatten()]).reshape(grid.shape)
-    display_grid[crew_position] = 'C'  # Mark the crew's current position
-    display_grid[bot_position] = 'B'  # Mark the Bot's current position
+    display_grid[crew_position] = 'C'
+    display_grid[bot_position] = 'B'  
     center = (len(grid) // 2, len(grid) // 2)
-    display_grid[center] = 'T'  # Teleport pad
+    display_grid[center] = 'T'
     df = pd.DataFrame(display_grid, index=[f"{i}" for i in range(grid.shape[0])],
                       columns=[f"{j}" for j in range(grid.shape[1])])
     print(df)
     print()
 
+
+# Bot movement logic, decided by picking the min value from the value matrix
 
 def decide_bot_move(grid, bot_position, crew_position, V, n):
     min_time = float('inf')
@@ -189,24 +191,23 @@ def decide_bot_move(grid, bot_position, crew_position, V, n):
     return best_move
 
 
+# Main simulation that has a toggle for the Bot to exist or not
+# Has a minimum of 100000 timesteps to debug bad grids.
+# Implements the crew fleeing logic according to position of bot
+
 def simulate_bot_crew_movement(grid, center, bot_toggle=True):
     n = len(grid)
-    # Random initial positions for crew and bot, ensuring they are valid
     crew_position, bot_position = initialize_positions(grid, center)
-
-    # Initialize reward and value functions
     V = value_function(grid, center)
-
     V = value_iteration(grid, V, n)
 
     V_reduced = np.full((n, n), np.inf)
     for crew_i in range(n):
         for crew_j in range(n):
             crew_index = crew_i * n + crew_j
-            min_time_for_crew = np.min(V[:, crew_index])  # Minimum over all bot positions
+            min_time_for_crew = np.min(V[:, crew_index])
             V_reduced[crew_i, crew_j] = min_time_for_crew
 
-    # Using Pandas DataFrame for better print
     df = pd.DataFrame(V_reduced, index=[f"{i}" for i in range(V_reduced.shape[0])],
                       columns=[f"{j}" for j in range(V_reduced.shape[1])])
     print("Expected times to reach the teleport pad for T_Bot:")
@@ -214,6 +215,7 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
 
     steps = 0
     path = [crew_position]
+    bot_path = [bot_position]
     print("Crew starts at:", crew_position)
     print("Bot starts at:", bot_position)
     print_grid(grid, crew_position, bot_position)
@@ -221,15 +223,15 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
     def is_valid(x, y):
         return 0 <= x < n and 0 <= y < n and grid[x][y] != -1
 
-    while crew_position != center and steps < 10000:
+    while crew_position != center and steps < 100000:
         if bot_toggle:
             new_bot_position = decide_bot_move(grid, bot_position, crew_position, V, n)
         else:
-            new_bot_position = bot_position  # Bot stays put if inactive
+            new_bot_position = bot_position  
 
-        # Determine if the bot is adjacent to the crew
+        
         if abs(crew_position[0] - new_bot_position[0]) + abs(crew_position[1] - new_bot_position[1]) == 1:
-            # Calculate the best move to maximize distance from bot, fleeing behavior
+            
             possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
                               if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
             if possible_moves:
@@ -240,22 +242,23 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
                 best_moves = [move for move, dist in distances.items() if dist == max_distance]
                 move_choice = best_moves[np.random.choice(len(best_moves))]
         else:
-            # Normal random move in cardinal directions
+           
             possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
                               if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
             move_choice = possible_moves[np.random.choice(len(possible_moves))] if possible_moves else (0, 0)
 
         new_crew_position = (crew_position[0] + move_choice[0], crew_position[1] + move_choice[1])
 
-        # Update positions
+        
         bot_position = new_bot_position
         crew_position = new_crew_position
+        bot_path.append(bot_position)
         path.append(crew_position)
 
-        # print_grid(grid, crew_position, bot_position)  # For debugging each step
+        # print_grid(grid, crew_position, bot_position)  
         steps += 1
         # print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
-        if steps % 10 == 0 or crew_position == center:  # Print every 10 steps and at the end
+        if steps % 10 == 0 or crew_position == center:
             print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
             # print_grid(grid, crew_position, bot_position)
 
@@ -268,6 +271,7 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
 
 
 # Intialize crew only for Optimal Bot simulation
+
 def initialize_crew_position(grid, center):
     n = len(grid)
     crew_position = (np.random.randint(n), np.random.randint(n))
@@ -277,11 +281,14 @@ def initialize_crew_position(grid, center):
 
     return crew_position
 
+# Main simulation used for optimal_simulation, returns steps taken only to compare
+# to every other 'steps' for each vaild cell the bot can spawn in
 
 def simulate_optimal_bot_crew_movement(grid, bot_position, center, V):
-    # Random initial positions for crew ensuring they are valid
+    
     n = len(grid)
     crew_position = initialize_crew_position(grid, center)
+    #print(crew_position)
 
     steps = 0
 
@@ -291,9 +298,8 @@ def simulate_optimal_bot_crew_movement(grid, bot_position, center, V):
     while crew_position != center and steps < 10000:
         new_bot_position = decide_bot_move(grid, bot_position, crew_position, V, n)
 
-        # Determine if the bot is adjacent to the crew
+        
         if abs(crew_position[0] - new_bot_position[0]) + abs(crew_position[1] - new_bot_position[1]) == 1:
-            # Calculate the best move to maximize distance from bot, fleeing behavior
             possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
                               if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
             if possible_moves:
@@ -304,45 +310,46 @@ def simulate_optimal_bot_crew_movement(grid, bot_position, center, V):
                 best_moves = [move for move, dist in distances.items() if dist == max_distance]
                 move_choice = best_moves[np.random.choice(len(best_moves))]
         else:
-            # Normal random move in cardinal directions
+            
             possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
                               if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
             move_choice = possible_moves[np.random.choice(len(possible_moves))] if possible_moves else (0, 0)
 
         new_crew_position = (crew_position[0] + move_choice[0], crew_position[1] + move_choice[1])
 
-        # Update positions
         bot_position = new_bot_position
         crew_position = new_crew_position
         steps += 1
 
     return steps
 
+# Main simulation to test optimal path for the Bot
 
 def main_simulation():
     grid, center = initialize_grid()
     P_no_bot = initialize_probabilities(grid)
     mdv_transition_matrix = solve_for_expected_times(P_no_bot, grid, center)
 
-    # Using Pandas DataFrame for better print
+    
     df = pd.DataFrame(mdv_transition_matrix, index=[f"{i}" for i in range(mdv_transition_matrix.shape[0])],
                       columns=[f"{j}" for j in range(mdv_transition_matrix.shape[1])])
     print("Expected times to reach the teleport pad for T_NoBot:")
     print(df)
 
-    # Simulate optimal Bot movement
+    # Turn the Bot On or Off
     bot_toggle = True
     path, steps = simulate_bot_crew_movement(grid, center, bot_toggle)
     print(f"Path : {path}, Steps: {steps}")
 
+# Main simulation to test the best bot spawn in open grids given the same random crew spawn
+# Returns the best steps taken and bot spawn position
 
 def optimal_simulation():
-    # Initialize probabilities for no bot scenario to compare
+    
     grid, center = initialize_grid()
     P_no_bot = initialize_probabilities(grid)
     mdv_transition_matrix = solve_for_expected_times(P_no_bot, grid, center)
 
-    # Using Pandas DataFrame for better print
     df = pd.DataFrame(mdv_transition_matrix, index=[f"{i}" for i in range(mdv_transition_matrix.shape[0])],
                       columns=[f"{j}" for j in range(mdv_transition_matrix.shape[1])])
     print("Expected times to reach the teleport pad for T_NoBot:")
@@ -360,19 +367,19 @@ def optimal_simulation():
     for crew_i in range(n):
         for crew_j in range(n):
             crew_index = crew_i * n + crew_j
-            min_time_for_crew = np.min(V[:, crew_index])  # Minimum over all bot positions
+            min_time_for_crew = np.min(V[:, crew_index])
             V_reduced[crew_i, crew_j] = min_time_for_crew
 
-    # Using Pandas DataFrame for better print
+    
     df = pd.DataFrame(V_reduced, index=[f"{i}" for i in range(V_reduced.shape[0])],
                       columns=[f"{j}" for j in range(V_reduced.shape[1])])
     print("Expected times to reach the teleport pad for T_Bot:")
     print(df)
 
-    # Test each valid position on the grid
+    
     for i in range(n):
         for j in range(n):
-            if grid[i][j] != -1:  # Ensure the bot does not start in a blocked cell
+            if grid[i][j] != -1:
                 bot_position = (i, j)
                 # print(f"Testing bot start position at {bot_position}")
                 time_taken = simulate_optimal_bot_crew_movement(grid, bot_position, center, V)
@@ -384,25 +391,21 @@ def optimal_simulation():
     print(f"Optimal bot position is {best_position} with expected time {best_time}")
     return best_position, results
 
+# Training simulation for recording data for Learned Bot and Generalizing.. Bot
 
 def training_bot_crew_movement(grid, center, bot_toggle):
     n = len(grid)
-    # Random initial positions for crew and bot, ensuring they are valid
     crew_position, bot_position = initialize_positions(grid, center)
 
-    # Print grid for debugging generalized data
     # print_grid(grid, crew_position, bot_position)
 
-    # Initialize reward and value functions
+    
     V = value_function(grid, center)
     V = value_iteration(grid, V, n)
 
-    # Save the Bot and Crew configuration when they succeed
+    
     training_data = []
-
     steps = 0
-    # Have an indicator in training data that indicates a success state
-    success = 0
     path = [crew_position]
 
     # print("Crew starts at:", crew_position)
@@ -413,15 +416,13 @@ def training_bot_crew_movement(grid, center, bot_toggle):
     while crew_position != center and steps < 100000:
         if bot_toggle:
             new_bot_position = decide_bot_move(grid, bot_position, crew_position, V, n)
-            # Save the action for bot movement
             action = (new_bot_position[0] - bot_position[0], new_bot_position[1] - bot_position[1])
         else:
-            new_bot_position = bot_position  # Bot stays put if inactive
+            new_bot_position = bot_position
             action = (0, 0)
 
-        # Determine if the bot is adjacent to the crew
         if abs(crew_position[0] - new_bot_position[0]) + abs(crew_position[1] - new_bot_position[1]) == 1:
-            # Calculate the best move to maximize distance from bot, fleeing behavior
+            
             possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
                               if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
             if possible_moves:
@@ -432,17 +433,16 @@ def training_bot_crew_movement(grid, center, bot_toggle):
                 best_moves = [move for move, dist in distances.items() if dist == max_distance]
                 move_choice = best_moves[np.random.choice(len(best_moves))]
         else:
-            # Normal random move in cardinal directions
+            
             possible_moves = [(dx, dy) for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]
                               if is_valid(crew_position[0] + dx, crew_position[1] + dy)]
             move_choice = possible_moves[np.random.choice(len(possible_moves))] if possible_moves else (0, 0)
 
         new_crew_position = (crew_position[0] + move_choice[0], crew_position[1] + move_choice[1])
 
-        # Record the state and action, success is False, so it will be 0
+        # Record the state and action, 0 represents success state, so 0 because crew is not at the center
         training_data.append([bot_position[0], bot_position[1], crew_position[0], crew_position[1], action, 0])
 
-        # Update positions
         bot_position = new_bot_position
         crew_position = new_crew_position
         path.append(crew_position)
@@ -450,13 +450,13 @@ def training_bot_crew_movement(grid, center, bot_toggle):
         # print_grid(grid, crew_position, bot_position)  # For debugging each step
         steps += 1
         # print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
-        # if steps % 10 == 0 or crew_position == center:  # Print every 10 steps and at the end
+        # if steps % 10 == 0 or crew_position == center:
         # print("Step", steps, "Crew at", crew_position, "Bot at", bot_position)
         # print_grid(grid, crew_position, bot_position)
 
         if crew_position == center:
             print("Crew reaches the teleport pad at step, success = True", steps)
-            training_data.append([bot_position[0], bot_position[1], crew_position[0], crew_position[1], action, 1])
+            training_data.append([bot_position[0], bot_position[1], crew_position[0], crew_position[1], action, 1]) # 1 equals success
             # print_grid(grid, crew_position, bot_position)
             break
 
@@ -467,123 +467,99 @@ def training_bot_crew_movement(grid, center, bot_toggle):
 
     return training_data
 
+# Get training data for Learned Bot
 
 def get_training_data():
     grid, center = initialize_grid()
-    # P_no_bot = initialize_probabilities(grid)
-    # mdv_transition_matrix = solve_for_expected_times(P_no_bot, grid, center)
 
-    """# Using Pandas DataFrame for better print
-    df = pd.DataFrame(mdv_transition_matrix, index=[f"{i}" for i in range(mdv_transition_matrix.shape[0])],
-                      columns=[f"{j}" for j in range(mdv_transition_matrix.shape[1])])
-    print("Expected times to reach the teleport pad for T_NoBot:")
-    print(df)"""
-
-    # Get training data from main simulation into an array
     training_data = training_bot_crew_movement(grid, center, True)
 
-    # Convert data to DataFrame for Neural Network
     df = pd.DataFrame(training_data, columns=['bot_x', 'bot_y', 'crew_x', 'crew_y', 'action', 'success'])
 
-    # Make it into a CSV
     df.to_csv('training_data.csv', index=False)
 
+# Generalize valid ship configurations and run simulations on them. Throw up simulation data that ends in failure or takes > 100000 steps
 
 def generate_ship_configurations(n=11, random_blocks=10, total_configs=10000):
-    center = (n // 2, n // 2)  # Center for teleport pad
-    fixed_blocks = [(center[0] - 1, center[1] - 1), (center[0] - 1, center[1] + 1),
-                    (center[0] + 1, center[1] - 1),
-                    (center[0] + 1, center[1] + 1)]  # Fixed blocks around the teleport pad
+    center = (n // 2, n // 2) 
+    fixed_blocks = [(center[0] - 1, center[1] - 1), (center[0] - 1, center[1] + 1), (center[0] + 1, center[1] - 1), (center[0] + 1, center[1] + 1)]  
     training_data = []
 
-    # Always keep open cells around the teleport pad for clear path
-    open_paths = [(center[0], center[1] - 1), (center[0], center[1] + 1), (center[0] - 1, center[1]),
-                  (center[0] + 1, center[1]),
-                  (center[0], center[1] - 2), (center[0], center[1] + 2), (center[0] - 2, center[1]),
-                  (center[0] + 2, center[1])]
+    open_paths = [(center[0], center[1] - 1), (center[0], center[1] + 1), (center[0] - 1, center[1]), (center[0] + 1, center[1]),
+                  (center[0], center[1] - 2), (center[0], center[1] + 2), (center[0] - 2, center[1]), (center[0] + 2, center[1])]
 
-    # Generate all possible positions except the center and its immediate diagonal surroundings
     all_positions = [(i, j) for i in range(n) for j in range(n)
                      if (i, j) not in fixed_blocks and (i, j) != center and (i, j) not in open_paths]
-
-    # Choose configurations
+    
     chosen_configs = []
     for _ in range(total_configs):
         chosen_blocks = np.random.choice(range(len(all_positions)), random_blocks, replace=False)
         config_blocks = [all_positions[idx] for idx in chosen_blocks] + fixed_blocks
         chosen_configs.append(config_blocks)
-
-    # For each configuration, simulate and collect data
+    
     for config in chosen_configs:
         grid = np.zeros((n, n), dtype=int)
-        grid[center] = 0  # Place teleport pad
+        grid[center] = 0  
         for pos in config:
-            grid[pos] = -1  # Place blocked cells
+            grid[pos] = -1  
 
-        # Assume a function `simulate_bot_crew_movement` that simulates the movement and collects data
         data = training_bot_crew_movement(grid, center, True)
         training_data.extend(data)
-
-    # Convert data to DataFrame for Neural Network
+   
     df = pd.DataFrame(training_data, columns=['bot_x', 'bot_y', 'crew_x', 'crew_y', 'action', 'success'])
 
-    # Make it into a CSV
     df.to_csv('training_data.csv', index=False)
 
 
-# Classification Bot
+# Classification Bot, utilizes Batch norm, DP
 class ClassificationBot(nn.Module):
     def __init__(self):
         super(ClassificationBot, self).__init__()
-        self.fc1 = nn.Linear(4, 128)  # 4 inputs: Bot Actions and Crew Actions
-        self.bn1 = nn.BatchNorm1d(128)  # Batch Normalization
-        self.dropout1 = nn.Dropout(0.2)  # Dropout Layer
-        self.fc2 = nn.Linear(128, 128)  # Duplicate the Layer
+        self.fc1 = nn.Linear(4, 128)  
+        self.bn1 = nn.BatchNorm1d(128)  
+        self.dropout1 = nn.Dropout(0.2)  
+        self.fc2 = nn.Linear(128, 128)  
         self.bn2 = nn.BatchNorm1d(128)
         self.dropout2 = nn.Dropout(0.2)
-        self.fc3 = nn.Linear(128, 9)  # 9 outputs: 8 actions + 1 success indicator
+        self.fc3 = nn.Linear(128, 9)  
 
     def forward(self, x):
         x = self.dropout1(torch.relu(self.bn1(self.fc1(x))))
         x = self.dropout2(torch.relu(self.bn2(self.fc2(x))))
         return torch.log_softmax(self.fc3(x), dim=1)
 
+# Neural network, outputs accuracy over data provided, only match binary values as output to simplify complexity
+# Success parameter is to include only successful data in training data
+# Normalizes training data before training
 
 def neural_network():
     df = pd.read_csv('training_data.csv')
-    # Assuming 'action' is encoded as one-hot and 'success' is a binary column
     X = df[['bot_x', 'bot_y', 'crew_x', 'crew_y']].values
-    # Need to merge action and success into a single label set, reduces complexity for the CNN
     y_actions = pd.get_dummies(df['action']).values
     y_success = df['success'].values.reshape(-1, 1)
     y = np.concatenate((y_actions, y_success), axis=1)
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=5)
 
-    # Normalize data
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
 
-    # Convert to PyTorch tensors
     X_train = torch.tensor(X_train, dtype=torch.float32)
     y_train = torch.tensor(y_train, dtype=torch.float32)
     X_test = torch.tensor(X_test, dtype=torch.float32)
     y_test = torch.tensor(y_test, dtype=torch.float32)
 
-    # Create datasets
     train_dataset = TensorDataset(X_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
+    train_load = DataLoader(train_dataset, batch_size=64, shuffle=False)
 
-    # Initialize model
     model = ClassificationBot()
     loss_function = nn.NLLLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    # Training loop
     for epoch in range(100):
         model.train()
-        for inputs, labels in train_loader:
+        for inputs, labels in train_load:
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = loss_function(outputs, torch.max(labels, 1)[1])
@@ -591,7 +567,6 @@ def neural_network():
             optimizer.step()
         print(f"Epoch: {epoch}, Loss: {loss.item()}")
 
-    # Evaluate model
     model.eval()
     results = []
     with torch.no_grad():
@@ -607,23 +582,16 @@ def neural_network():
 
 
 if __name__ == "__main__":
-    pd.set_option('display.max_rows', None)  # Ensures all rows are displayed
-    pd.set_option('display.max_columns', None)  # Ensures all columns are displayed
-    pd.set_option('display.width', None)  # Adjusts the display width for wide DataFrames
+    pd.set_option('display.max_rows', None) 
+    pd.set_option('display.max_columns', None) 
+    pd.set_option('display.width', None)
 
     np.random.seed(3)  # Fixing Ship Layout, Crew, and Bot Position
     # 0, 3, 5, 12 are good fixed layouts
 
-    # Basic simlulation using fixed Crew and fixed Bot placement
+    # Uncomment what you want to run
     main_simulation()
-
-    # Simulate the optimal Bot placement
-    # optimal_simulation()
-
-    # Train Neural Network
-    # get_training_data()
-
-    # Generalizing Training Data
-    # generate_ship_configurations()
-
-    # neural_network()
+    #optimal_simulation()
+    #get_training_data()
+    #generate_ship_configurations()
+    #neural_network()
