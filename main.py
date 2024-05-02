@@ -41,7 +41,7 @@ def initialize_positions(grid, center):
     return crew_position, bot_position
 
 
-# Initialize transition probabilities to solve for expected times
+# Initialize transition probabilities to solve for expected times and normalize
 # In T_NoBot scenario
 def initialize_probabilities(grid):
     n = len(grid)
@@ -60,7 +60,6 @@ def initialize_probabilities(grid):
                         neighbor_index = x * n + y
                         P[current_index, neighbor_index] = prob
 
-    # Normalize probabilities
     for x in range(num_states):
         if np.sum(P[x, :]) > 0:
             P[x, :] /= np.sum(P[x, :])
@@ -150,7 +149,7 @@ def value_iteration(grid, V, n, threshold=0.001, max_iterations=300):
 
         delta = np.max(np.abs(V - V_prev))
         if delta < threshold:
-            # print(f"Convergence achieved after {iteration + 1} iterations.")
+            print(f"Convergence achieved after {iteration + 1} iterations.")
             break
         # print(f"Iteration {iteration}: Delta = {delta}")
 
@@ -270,7 +269,7 @@ def simulate_bot_crew_movement(grid, center, bot_toggle=True):
     return path, steps
 
 
-# Intialize crew only for Optimal Bot simulation
+# Intialize crew only for optimal_simulation Bot simulation
 
 def initialize_crew_position(grid, center):
     n = len(grid)
@@ -283,6 +282,7 @@ def initialize_crew_position(grid, center):
 
 # Main simulation used for optimal_simulation, returns steps taken only to compare
 # to every other 'steps' for each vaild cell the bot can spawn in
+# Contains crew fleeing and random movement logic
 
 def simulate_optimal_bot_crew_movement(grid, bot_position, center, V):
     
@@ -511,7 +511,7 @@ def generate_ship_configurations(n=11, random_blocks=10, total_configs=10000):
     df.to_csv('training_data.csv', index=False)
 
 
-# Classification Bot, utilizes Batch norm, DP
+# Classification Bot, utilizes Linear, Batch norm, DO, Relu
 class ClassificationBot(nn.Module):
     def __init__(self):
         super(ClassificationBot, self).__init__()
@@ -529,7 +529,7 @@ class ClassificationBot(nn.Module):
         return torch.log_softmax(self.fc3(x), dim=1)
 
 # Neural network, outputs accuracy over data provided, only match binary values as output to simplify complexity
-# Success parameter is to include only successful data in training data
+# Success parameter is to include only successful data in training data, more for generalizing scenario
 # Normalizes training data before training
 
 def neural_network():
@@ -551,7 +551,7 @@ def neural_network():
     y_test = torch.tensor(y_test, dtype=torch.float32)
 
     train_dataset = TensorDataset(X_train, y_train)
-    train_load = DataLoader(train_dataset, batch_size=64, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
 
     model = ClassificationBot()
     loss_function = nn.NLLLoss()
@@ -559,7 +559,7 @@ def neural_network():
 
     for epoch in range(100):
         model.train()
-        for inputs, labels in train_load:
+        for inputs, labels in train_loader:
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = loss_function(outputs, torch.max(labels, 1)[1])
@@ -590,8 +590,10 @@ if __name__ == "__main__":
     # 0, 3, 5, 12 are good fixed layouts
 
     # Uncomment what you want to run
+    # Bear in mind, generate_ship... takes 3 hours.
+    # That means neural_network() would take around 2-3 hours more.
     main_simulation()
-    #optimal_simulation()
-    #get_training_data()
+    optimal_simulation()
+    get_training_data()
     #generate_ship_configurations()
-    #neural_network()
+    neural_network()
